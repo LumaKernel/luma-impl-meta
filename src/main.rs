@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use luma_lib_rs_meta::{fix::fix, watch_fix::watch_fix};
+use luma_impl_meta::{fix::fix, watch_fix::watch_fix};
 
 #[derive(Parser)]
 #[command()]
