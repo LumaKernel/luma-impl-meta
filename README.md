@@ -1,0 +1,4 @@
+
+```
+cargo install --path . --locked
+```
