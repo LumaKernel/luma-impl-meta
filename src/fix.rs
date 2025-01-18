@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{self, Path, PathBuf};
-use toml_edit::{value, DocumentMut, Value};
+use toml_edit::{value, DocumentMut, TableLike, Value};
 use walkdir::{DirEntry, WalkDir};
 
 /// すべてのパートに *.lib の形式が一箇所しか表れず、それが最後になっているディレクトリ
@@ -32,6 +32,8 @@ fn is_lib_dir(e: &DirEntry) -> bool {
 /// /foo/core.lib -> foo ("core" would be trimmed)
 /// /foo/util.lib -> foo-util
 /// /foo/util/bar.lib -> foo-util-bar
+/// Collections:
+/// /foo.col/bar.lib -> bar ("*.col" would be skipped)
 fn lib_rel_path_to_lib_name(lib_rel_path: &Path) -> String {
     let mut cs = lib_rel_path
         .components()
@@ -44,6 +46,7 @@ fn lib_rel_path_to_lib_name(lib_rel_path: &Path) -> String {
         })
         .collect::<Vec<_>>();
     let last = cs.pop().unwrap().trim_end_matches(".lib");
+    cs.retain(|&c| !c.ends_with(".col"));
     cs.push(last);
     if last == "core" {
         cs.pop().unwrap();
@@ -145,6 +148,26 @@ fn check_libs(libs: &[LibAnalysis]) -> Result<(), Vec<String>> {
         Err(errors)
     }
 }
+fn fix_lib_dep(lib_rel_path: &PathBuf, libs: &LibAnalysisBundle, deps: &mut dyn TableLike) {
+    for (dep_name, dep) in deps.iter_mut() {
+        if let Some(dep) = dep.as_inline_table_mut() {
+            if let Some(path) = dep.get_mut("path") {
+                *path = Value::from(
+                    libs.get(&dep_name.to_string())
+                        .map(|dep_lib| {
+                            relative_path(lib_rel_path, &dep_lib.lib_rel_path)
+                                .to_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                        .unwrap_or_else(|| "NOT_FOUND".to_owned()),
+                );
+            }
+        }
+    }
+    // dependenciesを辞書順に並びかえる
+    deps.sort_values();
+}
 
 fn fix_lib(lib: &mut LibAnalysis, libs: &LibAnalysisBundle) {
     if let Some(TomlFile { doc, .. }) = &mut lib.cargo_toml {
@@ -154,29 +177,14 @@ fn fix_lib(lib: &mut LibAnalysis, libs: &LibAnalysisBundle) {
         }
         // Cargo.tomlのdependencies指定のパスの修正をする
         // commutative-ring = { path = "" }  ---> commutative-ring = { path = "../commutative-ring.lib" }
-        if let Some(deps) = doc
-            .as_table_mut()
-            .get_mut("dependencies")
-            .and_then(|v| v.as_table_like_mut())
-        {
-            for (dep_name, dep) in deps.iter_mut() {
-                if let Some(dep) = dep.as_inline_table_mut() {
-                    if let Some(path) = dep.get_mut("path") {
-                        *path = Value::from(
-                            libs.get(&dep_name.to_string())
-                                .map(|dep_lib| {
-                                    relative_path(&lib.lib_rel_path, &dep_lib.lib_rel_path)
-                                        .to_str()
-                                        .unwrap()
-                                        .to_owned()
-                                })
-                                .unwrap_or_else(|| "NOT_FOUND".to_owned()),
-                        );
-                    }
-                }
+        for key in ["dependencies", "dev-dependencies"] {
+            if let Some(deps) = doc
+                .as_table_mut()
+                .get_mut(key)
+                .and_then(|v| v.as_table_like_mut())
+            {
+                fix_lib_dep(&lib.lib_rel_path, libs, deps);
             }
-            // dependenciesを辞書順に並びかえる
-            deps.sort_values();
         }
     }
 }
